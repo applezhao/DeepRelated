@@ -24,6 +24,7 @@
 #include <string>
 #include <vector>
 
+
 #ifdef NDEBUG
 #include <boost/shared_ptr.hpp>
 #include <boost/date_time/posix_time/posix_time_types.hpp>
@@ -43,62 +44,12 @@
 
 #endif // NDEBUG
 
-#ifdef NDEBUG
-static void init_log(void)
-{
-	boost::log::add_common_attributes();
-}
-#endif
-
+#include "ImageStruct.h"
+#include "PointCloudStruct.h"
 
 using namespace std;
 
-struct pointXYDeepRGBA
-{
-	float x;
-	float y;
-	float deepFront;
-	float deepBack;
-	float r;
-	float g;
-	float b;
-	float a;
 
-	void set2dCoord(float x, float y)
-	{
-		this->x = x;
-		this->y = y;
-	}
-	void setDeep(float front, float back)
-	{
-		deepFront = front;
-		deepBack = back;
-	}
-	void setColor(float r, float g, float b, float a)
-	{
-		this->r = r;
-		this->g = g;
-		this->b = b;
-		this->a = a;
-	}
-};
-class pointCloud
-{
-public:
-	void addPoint(const pointXYDeepRGBA& p)
-	{
-		m_points.push_back(p);
-	}
-	void toGPU(){}
-	void backToCPU(){}
-	void setImageSize(int w, int h)
-	{
-
-	}
-private:
-	vector<pointXYDeepRGBA> m_points;
-	vector< vector<int> > imageIndexes;//start of each pixel in m_points
-};
 class loadExrAsPointCloud
 {
 public:
@@ -121,10 +72,10 @@ public:
 		getChannelsInfo();
 		m_part = new Imf::DeepScanLineInputPart(*m_file, partCounts);
 
-		for (int y = 0; y < imageBox().size().y; y++)
+		/*for (int y = 0; y < imageBox().size().y; y++)
 		{
 
-		}
+		}*/
 	}
 
 	void getChannelsInfo()
@@ -133,9 +84,11 @@ public:
 		{
 			const char* chanName = it.name();
 			m_channels.push_back(string(chanName));
+			BOOST_LOG_TRIVIAL(info) << "DEEP file has channel : " << string(chanName);
 		}
-		imageBox = m_header.dataWindow();
-		m_pc.setImageSize(imageBox.size().x, imageBox.size().y);
+		m_imageDataBox = m_header.dataWindow();
+		m_imageDisplayBox = m_header.displayWindow();
+		m_pc.setImageSize(m_imageDataBox.size().x, m_imageDataBox.size().y);
 	}
 
 	void decodeLine(Imf::DeepScanLineInputPart& part, int y)
@@ -144,13 +97,71 @@ public:
 		const int dataX = m_header.dataWindow().min.x;
 
 		std::vector<unsigned> sampleCounts(dataWid, 0);
+		unsigned chanCount = m_channels.size();
 
 		Imf::DeepFrameBuffer frameBuffer;
 		frameBuffer.insertSampleCountSlice(Imf::Slice(Imf::UINT,
 			(char*)(&sampleCounts[0] - dataX),
 			sizeof(unsigned), 0));
 
-		part.rawPixelData(y, )
+		std::vector<std::vector<const float*> > samples;
+		samples.reserve(chanCount);
+
+		for (int i = 0; i < chanCount; i++)
+		{
+			samples.push_back(vector<const float*>(dataWid));
+			frameBuffer.insert(m_channels[i],
+				Imf::DeepSlice(
+					Imf::FLOAT, 
+					(char*)(&samples.back()[0]-dataX),
+					sizeof(const float*),
+					0,
+					sizeof(float)*chanCount
+				));
+		}
+
+		std::vector<float> data;
+		std::vector<char> deepScanlineBuffer;
+		{
+			//thread lock
+			Imf::Int64 pixSize;
+			part.rawPixelData(y, nullptr, pixSize);
+
+			deepScanlineBuffer.resize(pixSize);
+
+			part.rawPixelData(y, &deepScanlineBuffer[0], pixSize);
+
+			BOOST_LOG_TRIVIAL(info) << "DEEP file LINE " << y <<" with data size "<<pixSize <<" == "<<deepScanlineBuffer.size();
+		}
+
+		// Read the sample counts from the data buffer.
+		part.readPixelSampleCounts(&deepScanlineBuffer[0], frameBuffer, y, y);
+
+		unsigned sampleCountSum = accumulate(sampleCounts.begin(), sampleCounts.end(), 0);
+
+		data.resize(sampleCountSum*chanCount, 0);
+
+		for (int i = 0; i < chanCount; i++)
+		{
+			const float* ptr = &data[0] + i;
+			for (int x = 0; x < dataWid; x++)
+			{
+				samples[i][x] = ptr;
+				ptr += chanCount*sampleCounts[x];
+			}
+		}
+
+		part.readPixels(&deepScanlineBuffer[0], frameBuffer, y, y);
+
+		for (int x = 0; x < dataWid; x++)
+		{
+			int sampleCount = sampleCounts[x];
+			pixelDeepRGBA pix(sampleCount);
+			for (int i = 0; i < sampleCount; i++)
+			{
+				pix[i].
+			}
+		}
 	}
 
 private:
@@ -159,7 +170,11 @@ private:
 	Imf::DeepScanLineInputPart *m_part;
 	Imf::Header m_header;
 	pointCloud m_pc;
-	Imath::Box2i imageBox;
+	imagePlane m_ip;
+	Imath::Box2i m_imageDataBox;
+	Imath::Box2i m_imageDisplayBox;
 
 	vector<string> m_channels;
+
+	//Imf::DeepScanlineBuffer m_deepScanlineBuffer;
 };
